@@ -66,7 +66,6 @@ elif [[ $# -lt 2 ]]; then
   fi
 fi
 
-
 if [[ -f "$1" && -f "$2" ]]; then
   echo "Error: Missing search string." >&2
   print_usage
@@ -88,6 +87,7 @@ highlight() {
   local pattern="$1"
   local ignore_case="$2"
   local text="$3"
+  # Use perl to highlight regex match, using the user's pattern as a true regex, not a fixed string
   if [[ "$ignore_case" -eq 1 ]]; then
     printf '%s\n' "$text" | perl -pe "s/($pattern)/\e[1;31m\$1\e[0m/ig"
   else
@@ -95,46 +95,50 @@ highlight() {
   fi
 }
 
-grep_flags=""
-[[ "$ignore_case" -eq 1 ]] && grep_flags="$grep_flags -i"
-[[ "$invert_match" -eq 1 ]] && grep_flags="$grep_flags -v"
-
-# Count mode
-if [[ $only_count -eq 1 ]]; then
-  for file in "${files[@]}"; do
-    count=$(grep $grep_flags -c -- "$search_string" "$file")
-    if [[ ${#files[@]} -gt 1 ]]; then
-      printf "${MAGENTA}%s${NC}${CYAN}:${NC}%s\n" "$file" "$count"
-    else
-      printf "%s\n" "$count"
-    fi
-  done
-  exit 0
-fi
-
-if [[ $only_list_files -eq 1 ]]; then
-  for file in "${files[@]}"; do
-    if grep $grep_flags -q -- "$search_string" "$file"; then
-      printf "${MAGENTA}%s${NC}\n" "$file"
-    fi
-  done
-  exit 0
-fi
-
+# Main processing loop (NO GREP!)
+filematch=0 # tracks if any match was found for -l or -c
 for file in "${files[@]}"; do
   line_number=0
+  match_count=0
+  matched_file=0
   while IFS= read -r line; do
     ((line_number++))
-    if echo "$line" | grep $grep_flags -q -- "$search_string"; then
-      out=""
-      if [[ ${#files[@]} -gt 1 ]]; then
-        out+="${MAGENTA}${file}${NC}${CYAN}:${NC}"
+    # Perl uses regex to match
+    if [[ "$ignore_case" -eq 1 ]]; then
+      match=$(printf '%s\n' "$line" | perl -ne "print if /$search_string/i")
+    else
+      match=$(printf '%s\n' "$line" | perl -ne "print if /$search_string/")
+    fi
+
+    if [[ ( -n "$match" && $invert_match -eq 0 ) || ( -z "$match" && $invert_match -eq 1 ) ]]; then
+      ((match_count++))
+      matched_file=1
+      # Print only if not -c and not -l
+      if [[ $only_count -eq 0 && $only_list_files -eq 0 ]]; then
+        out=""
+        if [[ ${#files[@]} -gt 1 ]]; then
+          out+="${MAGENTA}${file}${NC}${CYAN}:${NC}"
+        fi
+        if [[ $show_line_numbers -eq 1 ]]; then
+          out+="${GREEN}${line_number}${NC}${CYAN}:${NC}"
+        fi
+        out+="$(highlight "$search_string" "$ignore_case" "$line")"
+        printf "%b\n" "$out"
       fi
-      if [[ $show_line_numbers -eq 1 ]]; then
-        out+="${GREEN}${line_number}${NC}${CYAN}:${NC}"
-      fi
-      out+="$(highlight "$search_string" "$ignore_case" "$line")"
-      printf "%b\n" "$out"
     fi
   done < "$file"
+
+  # -c: print count per file (like grep)
+  if [[ $only_count -eq 1 ]]; then
+    if [[ ${#files[@]} -gt 1 ]]; then
+      printf "${MAGENTA}%s${NC}${CYAN}:${NC}%s\n" "$file" "$match_count"
+    else
+      printf "%s\n" "$match_count"
+    fi
+  fi
+
+  # -l: print filename if any matches
+  if [[ $only_list_files -eq 1 && $matched_file -eq 1 ]]; then
+    printf "${MAGENTA}%s${NC}\n" "$file"
+  fi
 done
